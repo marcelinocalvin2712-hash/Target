@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <title>Nerf Point Tracker</title>
+    <style>
+        body { background: #121212; color: white; font-family: 'Courier New', Courier, monospace; text-align: center; margin: 0; }
+        #container { position: relative; width: 640px; height: 480px; margin: 10px auto; border: 4px solid #333; box-shadow: 0 0 20px #000; }
+        video, canvas { position: absolute; top: 0; left: 0; border-radius: 8px; }
+        #target-box { 
+            position: absolute; border: 4px solid #00ff00; 
+            top: 30%; left: 35%; width: 30%; height: 40%; 
+            z-index: 10; pointer-events: none;
+            box-shadow: inset 0 0 10px #00ff00;
+        }
+        .score-board { font-size: 50px; color: #f1c40f; margin: 10px; text-shadow: 2px 2px #000; }
+        button { padding: 15px 40px; font-size: 20px; cursor: pointer; background: #e74c3c; color: white; border: none; border-radius: 50px; font-weight: bold; }
+        button:hover { background: #c0392b; transform: scale(1.05); }
+    </style>
+</head>
+<body>
+
+    <div class="score-board">SCORE: <span id="points">0</span></div>
+    <div id="status">KLIK START UNTUK MAIN</div>
+
+    <div id="container">
+        <video id="video" autoplay playsinline width="640" height="480"></video>
+        <canvas id="canvas" width="640" height="480"></canvas>
+        <div id="target-box"></div>
+    </div>
+
+    <div style="margin-top: 20px;">
+        <button onclick="startSystem()">MULAI GAME</button>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const pointsElement = document.getElementById('points');
+        const statusText = document.getElementById('status');
+        
+        let score = 0;
+        let prevFrameData = null;
+        let audioCtx = null;
+        let isActive = false;
+
+        // FUNGSI SUARA "TAMBAH POIN" (Retro Arcade Style)
+        function playPointSound() {
+            if (!audioCtx) return;
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+
+            osc.type = 'square'; // Karakter suara game retro
+            // Nada naik: dari 500Hz ke 1000Hz (efek 'ding')
+            osc.frequency.setValueAtTime(523.25, now); // Nada C5
+            osc.frequency.exponentialRampToValueAtTime(1046.50, now + 0.1); // Nada C6
+
+            gain.gain.setValueAtTime(0.1, now);
+            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+
+            osc.start();
+            osc.stop(now + 0.3);
+        }
+
+        async function startSystem() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { frameRate: 60 } });
+            video.srcObject = stream;
+            isActive = true;
+            statusText.innerText = "SISTEM AKTIF! TEMBAK KOTAK HIJAU";
+            render();
+        }
+
+        function render() {
+            if (!isActive) return;
+            ctx.drawImage(video, 0, 0, 640, 480);
+            
+            // Area ROI (Region of Interest) - Kotak tengah
+            const roi = { x: 224, y: 144, w: 192, h: 192 };
+            const currentFrameData = ctx.getImageData(roi.x, roi.y, roi.w, roi.h);
+
+            if (prevFrameData) {
+                let diff = 0;
+                for (let i = 0; i < currentFrameData.data.length; i += 4) {
+                    const d = Math.abs(currentFrameData.data[i] - prevFrameData.data[i]) +
+                              Math.abs(currentFrameData.data[i+1] - prevFrameData.data[i+1]) +
+                              Math.abs(currentFrameData.data[i+2] - prevFrameData.data[i+2]);
+                    if (d > 80) diff++;
+                }
+
+                // Jika ada guncangan/benda masuk kotak
+                if (diff > 400) { 
+                    handleHit();
+                }
+            }
+            prevFrameData = currentFrameData;
+            requestAnimationFrame(render);
+        }
+
+        let lastHit = 0;
+        function handleHit() {
+            const now = Date.now();
+            if (now - lastHit < 1200) return; // Cooldown 1.2 detik agar skor tidak spam
+            
+            lastHit = now;
+            score += 10;
+            pointsElement.innerText = score;
+            statusText.innerText = "BULLSEYE! +10";
+            statusText.style.color = "#f1c40f";
+            
+            playPointSound();
+
+            setTimeout(() => {
+                statusText.innerText = "SIAP MENEMBAK...";
+                statusText.style.color = "white";
+            }, 1000);
+        }
+    </script>
+</body>
+</html>
