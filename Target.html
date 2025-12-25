@@ -2,123 +2,190 @@
 <html lang="id">
 <head>
     <meta charset="UTF-8">
-    <title>Nerf Point Tracker</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Nerf Smart Detector</title>
     <style>
-        body { background: #121212; color: white; font-family: 'Courier New', Courier, monospace; text-align: center; margin: 0; }
-        #container { position: relative; width: 640px; height: 480px; margin: 10px auto; border: 4px solid #333; box-shadow: 0 0 20px #000; }
-        video, canvas { position: absolute; top: 0; left: 0; border-radius: 8px; }
-        #target-box { 
-            position: absolute; border: 4px solid #00ff00; 
-            top: 30%; left: 35%; width: 30%; height: 40%; 
-            z-index: 10; pointer-events: none;
-            box-shadow: inset 0 0 10px #00ff00;
+        body { background: #0f172a; color: white; font-family: sans-serif; margin: 0; text-align: center; overflow: hidden; }
+        
+        .ui-panel { background: #1e293b; padding: 10px; border-bottom: 2px solid #334155; }
+        .score { font-size: 48px; font-weight: 900; color: #fbbf24; margin: 0; }
+        
+        #viewport { position: relative; width: 100vw; height: 50vh; background: #000; }
+        video { width: 100%; height: 100%; object-fit: cover; }
+        canvas { display: none; }
+
+        #target-box {
+            position: absolute; top: 50%; left: 50%;
+            width: 120px; height: 120px;
+            transform: translate(-50%, -50%);
+            border: 4px solid #38bdf8;
+            border-radius: 10px;
+            z-index: 10;
         }
-        .score-board { font-size: 50px; color: #f1c40f; margin: 10px; text-shadow: 2px 2px #000; }
-        button { padding: 15px 40px; font-size: 20px; cursor: pointer; background: #e74c3c; color: white; border: none; border-radius: 50px; font-weight: bold; }
-        button:hover { background: #c0392b; transform: scale(1.05); }
+
+        .settings { 
+            padding: 15px; background: #1e293b; 
+            display: flex; flex-direction: column; gap: 10px;
+            font-size: 14px;
+        }
+        .row { display: flex; justify-content: space-around; align-items: center; }
+        
+        input[type="color"] { border: none; width: 40px; height: 40px; cursor: pointer; background: none; }
+        input[type="range"] { width: 60%; }
+        
+        button { 
+            padding: 12px 30px; background: #38bdf8; color: #0f172a; 
+            border: none; border-radius: 25px; font-weight: bold; font-size: 16px;
+        }
+        #status { font-size: 12px; color: #94a3b8; margin-top: 5px; }
     </style>
 </head>
 <body>
 
-    <div class="score-board">SCORE: <span id="points">0</span></div>
-    <div id="status">KLIK START UNTUK MAIN</div>
+    <div class="ui-panel">
+        <div class="score" id="score-val">0</div>
+        <div id="status">PILIH WARNA & TEKAN START</div>
+    </div>
 
-    <div id="container">
-        <video id="video" autoplay playsinline width="640" height="480"></video>
-        <canvas id="canvas" width="640" height="480"></canvas>
+    <div id="viewport">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="proc-canvas"></canvas>
         <div id="target-box"></div>
     </div>
 
-    <div style="margin-top: 20px;">
-        <button onclick="startSystem()">MULAI GAME</button>
+    <div class="settings">
+        <div class="row">
+            <div>
+                <label>Warna Peluru:</label><br>
+                <input type="color" id="color-target" value="#ff6600">
+            </div>
+            <div style="flex-grow: 1;">
+                <label>Sensitivitas Gerak: <span id="sens-val">20</span></label><br>
+                <input type="range" id="sens-slider" min="5" max="100" value="20">
+            </div>
+        </div>
+        
+        <div class="row">
+            <button id="start-btn" onclick="startApp()">START SENSOR</button>
+            <button onclick="resetScore()" style="background:#475569; color:white;">RESET</button>
+        </div>
     </div>
 
+    <audio id="hit-sound" src="https://assets.mixkit.co/active_storage/sfx/2019/2019-preview.mp3" preload="auto"></audio>
+
     <script>
-        const video = document.getElementById('video');
-        const canvas = document.getElementById('canvas');
+        const video = document.getElementById('webcam');
+        const canvas = document.getElementById('proc-canvas');
         const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        const pointsElement = document.getElementById('points');
-        const statusText = document.getElementById('status');
+        const scoreDisplay = document.getElementById('score-val');
+        const statusDisplay = document.getElementById('status');
+        const hitSound = document.getElementById('hit-sound');
         
+        // UI Elements
+        const colorInput = document.getElementById('color-target');
+        const sensSlider = document.getElementById('sens-slider');
+        const sensLabel = document.getElementById('sens-val');
+
         let score = 0;
-        let prevFrameData = null;
-        let audioCtx = null;
-        let isActive = false;
+        let lastFrameData = null;
+        let isReady = false;
+        let cooldown = false;
 
-        // FUNGSI SUARA "TAMBAH POIN" (Retro Arcade Style)
-        function playPointSound() {
-            if (!audioCtx) return;
-            const now = audioCtx.currentTime;
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
+        sensSlider.oninput = () => sensLabel.innerText = sensSlider.value;
 
-            osc.type = 'square'; // Karakter suara game retro
-            // Nada naik: dari 500Hz ke 1000Hz (efek 'ding')
-            osc.frequency.setValueAtTime(523.25, now); // Nada C5
-            osc.frequency.exponentialRampToValueAtTime(1046.50, now + 0.1); // Nada C6
-
-            gain.gain.setValueAtTime(0.1, now);
-            gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
-
-            osc.connect(gain);
-            gain.connect(audioCtx.destination);
-
-            osc.start();
-            osc.stop(now + 0.3);
+        // Konversi Hex ke RGB
+        function hexToRgb(hex) {
+            const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+            return result ? {
+                r: parseInt(result[1], 16),
+                g: parseInt(result[2], 16),
+                b: parseInt(result[3], 16)
+            } : null;
         }
 
-        async function startSystem() {
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            const stream = await navigator.mediaDevices.getUserMedia({ video: { frameRate: 60 } });
-            video.srcObject = stream;
-            isActive = true;
-            statusText.innerText = "SISTEM AKTIF! TEMBAK KOTAK HIJAU";
-            render();
+        async function startApp() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: "environment", frameRate: { ideal: 60 } }
+                });
+                video.srcObject = stream;
+                hitSound.play().then(() => { hitSound.pause(); hitSound.currentTime = 0; });
+                
+                document.getElementById('start-btn').innerText = "RUNNING...";
+                statusDisplay.innerText = "SENSOR AKTIF";
+                
+                canvas.width = 160;
+                canvas.height = 120;
+                isReady = true;
+                requestAnimationFrame(processFrame);
+            } catch (err) {
+                alert("Kamera gagal diakses.");
+            }
         }
 
-        function render() {
-            if (!isActive) return;
-            ctx.drawImage(video, 0, 0, 640, 480);
+        function processFrame() {
+            if (!isReady) return;
+
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
             
-            // Area ROI (Region of Interest) - Kotak tengah
-            const roi = { x: 224, y: 144, w: 192, h: 192 };
-            const currentFrameData = ctx.getImageData(roi.x, roi.y, roi.w, roi.h);
+            const roiX = 60, roiY = 40, roiW = 40, roiH = 40;
+            const currentFrame = ctx.getImageData(roiX, roiY, roiW, roiH);
+            const targetRGB = hexToRgb(colorInput.value);
+            const tolerance = 70; // Toleransi warna agar tidak terlalu kaku
 
-            if (prevFrameData) {
-                let diff = 0;
-                for (let i = 0; i < currentFrameData.data.length; i += 4) {
-                    const d = Math.abs(currentFrameData.data[i] - prevFrameData.data[i]) +
-                              Math.abs(currentFrameData.data[i+1] - prevFrameData.data[i+1]) +
-                              Math.abs(currentFrameData.data[i+2] - prevFrameData.data[i+2]);
-                    if (d > 80) diff++;
+            if (lastFrameData && !cooldown) {
+                let matchCount = 0;
+
+                for (let i = 0; i < currentFrame.data.length; i += 4) {
+                    const r = currentFrame.data[i];
+                    const g = currentFrame.data[i+1];
+                    const b = currentFrame.data[i+2];
+
+                    // 1. Filter Warna: Cek apakah piksel ini warnanya mirip target
+                    const colorMatch = Math.abs(r - targetRGB.r) < tolerance &&
+                                       Math.abs(g - targetRGB.g) < tolerance &&
+                                       Math.abs(b - targetRGB.b) < tolerance;
+
+                    if (colorMatch) {
+                        // 2. Filter Gerakan: Cek apakah piksel ini berubah dari frame sebelumnya
+                        const diff = Math.abs(r - lastFrameData.data[i]) +
+                                     Math.abs(g - lastFrameData.data[i+1]) +
+                                     Math.abs(b - lastFrameData.data[i+2]);
+                        
+                        if (diff > 50) { 
+                            matchCount++;
+                        }
+                    }
                 }
 
-                // Jika ada guncangan/benda masuk kotak
-                if (diff > 400) { 
-                    handleHit();
+                // Gunakan nilai slider untuk ambang batas deteksi
+                if (matchCount > parseInt(sensSlider.value)) { 
+                    triggerHit();
                 }
             }
-            prevFrameData = currentFrameData;
-            requestAnimationFrame(render);
+
+            lastFrameData = currentFrame;
+            requestAnimationFrame(processFrame);
         }
 
-        let lastHit = 0;
-        function handleHit() {
-            const now = Date.now();
-            if (now - lastHit < 1200) return; // Cooldown 1.2 detik agar skor tidak spam
-            
-            lastHit = now;
+        function triggerHit() {
+            cooldown = true;
             score += 10;
-            pointsElement.innerText = score;
-            statusText.innerText = "BULLSEYE! +10";
-            statusText.style.color = "#f1c40f";
-            
-            playPointSound();
+            scoreDisplay.innerText = score;
+            hitSound.currentTime = 0;
+            hitSound.play();
 
+            document.getElementById('target-box').style.borderColor = "#2ecc71";
+            
             setTimeout(() => {
-                statusText.innerText = "SIAP MENEMBAK...";
-                statusText.style.color = "white";
+                cooldown = false;
+                document.getElementById('target-box').style.borderColor = "#38bdf8";
             }, 1000);
+        }
+
+        function resetScore() {
+            score = 0;
+            scoreDisplay.innerText = score;
         }
     </script>
 </body>
